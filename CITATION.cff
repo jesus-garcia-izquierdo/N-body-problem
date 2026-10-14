@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Gravitational N-body Problem in Python: Symplectic Integrators, Chaos and Celestial Mechanics"
+type: software
+version: 1.0.0
+date-released: 2026-10-14
+license: MIT
+repository-code: "https://github.com/jesus-garcia-izquierdo/N-body-problem"
+authors:
+  - family-names: "García Izquierdo"
+    given-names: "Jesús"
+keywords:
+  - n-body problem
+  - celestial mechanics
+  - symplectic integrators
+  - velocity Verlet
+  - chaos
+  - Lyapunov exponent
+  - virial theorem

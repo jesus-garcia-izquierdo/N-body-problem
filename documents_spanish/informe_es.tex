@@ -1,0 +1,822 @@
+% ============================================================================
+%  El problema gravitatorio de N cuerpos — informe (español)
+%  Compilación: python tools/build_documents.py   (necesita xelatex)
+% ============================================================================
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{amsmath,amssymb}
+\usepackage{fontspec}
+\usepackage{unicode-math}
+\setmathfont{Latin Modern Math}
+\usepackage{polyglossia}
+\setdefaultlanguage{spanish}
+\usepackage{etoolbox}
+\gappto\captionsspanish{\renewcommand{\tablename}{Tabla}}
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\sisetup{exponent-product=\times, output-decimal-marker={,}, group-minimum-digits=5, group-digits=integer}
+\usepackage[font=small,labelfont=bf,margin=0.5cm]{caption}
+\usepackage{float}
+\usepackage{xcolor}
+\definecolor{link}{HTML}{1f5fae}
+\usepackage[colorlinks=true,linkcolor=link,citecolor=link,urlcolor=link]{hyperref}
+\hypersetup{pdftitle={Jesús García Izquierdo - https://github.com/jesus-garcia-izquierdo/N-body-problem}, pdfauthor={Jesús García Izquierdo}}
+\usepackage{enumitem}
+\setlist{nosep,leftmargin=1.4em}
+\usepackage{fancyhdr}
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small El problema gravitatorio de $N$ cuerpos}
+\fancyhead[R]{\small J. García Izquierdo}
+\fancyfoot[C]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+\setlength{\parskip}{0.35em}
+
+\graphicspath{{figures/}}
+\input{numbers.tex}
+
+\newcommand{\vect}[1]{\mathbf{#1}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\repo}{\href{https://github.com/jesus-garcia-izquierdo/N-body-problem}{github.com/jesus-garcia-izquierdo/N-body-problem}}
+
+\begin{document}
+
+% ---------------------------------------------------------------------------
+\begin{titlepage}
+\centering
+\vspace*{2.5cm}
+{\Large\bfseries Jesús García Izquierdo - {\urlstyle{same}\hypersetup{urlcolor=black}\url{https://github.com/jesus-garcia-izquierdo/N-body-problem}}\par}
+\vspace{0.6cm}
+{\LARGE\bfseries El problema gravitatorio de $N$ cuerpos\par}
+\vspace{0.25cm}
+{\large Integración simpléctica, leyes de conservación, estabilidad y caos\par}
+\vspace{1.5cm}
+{\normalsize Octubre de 2026\par}
+\vspace{1.2cm}
+{\small Código Python, vídeos y datos: \repo\par}
+\vspace{2cm}
+\begin{minipage}{0.86\textwidth}
+\small
+\textbf{Resumen.} Estudiamos el movimiento de $N$ masas puntuales que solo interaccionan
+mediante la gravedad newtoniana. Tras repasar la física (ecuaciones del movimiento,
+estructura hamiltoniana, leyes de conservación, teorema del virial, estabilidad lineal y
+exponentes de Lyapunov), integramos numéricamente las ecuaciones con el método de
+Verlet-velocidad y otros cuatro esquemas, mediante una implementación en Python
+totalmente vectorizada. Se analizan ocho experimentos: el sistema Sol--Tierra--Luna, un
+sistema de cuatro cuerpos con un cuerpo central masivo, un sistema caótico de seis
+cuerpos, una comparación de integradores, la coreografía en forma de ocho, la estabilidad
+del triángulo equilátero de Lagrange, el Sistema Solar y el colapso gravitatorio de un
+cúmulo estelar. La energía se conserva con un error de \SemErrE\ (Sol--Tierra--Luna, dos
+años), los momentos lineal y angular hasta la precisión de la máquina, los órdenes de
+convergencia medidos coinciden con la teoría, la tasa de inestabilidad del triángulo de
+Lagrange concuerda con la teoría lineal en tres cifras (\LagSigma\ frente a
+\LagSigmaTh), la tercera ley de Kepler se recupera con pendiente \SolarSlope\ y el
+sistema de seis cuerpos tiene un tiempo de Lyapunov de solo \ChaosLyapDays\ días.
+\end{minipage}
+\vfill
+{\footnotesize Este informe amplía y corrige el trabajo de 2023
+\emph{Problema de los n-cuerpos} de G.~Haro Pérez y J.~García Izquierdo
+(implementación en MATLAB).\par}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+% ===========================================================================
+\section{Introducción}
+% ===========================================================================
+
+El problema de $N$ cuerpos consiste en determinar el movimiento de $N$ masas que se
+atraen gravitatoriamente. Para $N=2$ lo resolvió Newton: los cuerpos describen cónicas.
+Para $N\ge3$ no existe una solución general en forma cerrada. Bruns (1887) demostró que no
+hay más integrales algebraicas que las diez clásicas, y Poincaré (1890) mostró que el
+movimiento puede ser extremadamente sensible a las condiciones iniciales, el fenómeno que
+hoy llamamos \emph{caos}. Sundman (1912) encontró una serie de potencias convergente para
+$N=3$, pero converge tan despacio que carece de utilidad práctica.
+
+La única vía general es, por tanto, la integración numérica. Sin embargo, una solución
+numérica solo es fiable si respeta lo que la dinámica exacta garantiza: la conservación de
+la energía, del momento lineal y del momento angular, y relaciones estadísticas como el
+teorema del virial. Este informe tiene tres objetivos:
+\begin{enumerate}
+  \item presentar la física necesaria para interpretar una simulación (sección~\ref{sec:model});
+  \item explicar por qué un integrador \emph{simpléctico} como Verlet-velocidad es la
+        herramienta adecuada y cuantificar su precisión (sección~\ref{sec:numerics});
+  \item analizar ocho experimentos que van del Sistema Solar al caos y a la formación de
+        cúmulos estelares (sección~\ref{sec:results}).
+\end{enumerate}
+Todos los valores numéricos del texto los produce el código del repositorio; el script
+\texttt{tools/build\_documents.py} regenera todas las figuras y todos los números.
+
+% ===========================================================================
+\section{Modelo físico}\label{sec:model}
+% ===========================================================================
+
+\subsection{Ecuaciones del movimiento}
+
+Sea $m_i$ la masa del cuerpo $i$, $\vect r_i(t)$ su posición y $\vect v_i(t)$ su velocidad.
+La ley de gravitación de Newton junto con el principio de superposición da
+\begin{equation}
+  \ddot{\vect r}_i = G\sum_{j\ne i} m_j\,\frac{\vect r_j-\vect r_i}{|\vect r_j-\vect r_i|^{3}},
+  \qquad i=1,\dots,N,
+  \label{eq:eom}
+\end{equation}
+con $G=\SI{6.67430e-11}{m^3.kg^{-1}.s^{-2}}$. Son $3N$ ecuaciones diferenciales ordinarias
+de segundo orden acopladas, o $6N$ de primer orden para $(\vect r_i,\vect v_i)$. Dadas las
+posiciones y velocidades en $t=0$, la solución existe y es única mientras no choquen dos
+cuerpos.
+
+\subsection{Estructura hamiltoniana}
+
+Escribiendo la energía en función de las posiciones $\vect q_i=\vect r_i$ y los momentos
+$\vect p_i=m_i\vect v_i$,
+\begin{equation}
+  H(\vect q,\vect p)=\underbrace{\sum_i\frac{|\vect p_i|^2}{2m_i}}_{T(\vect p)}
+  \;\underbrace{-\sum_{i<j}\frac{G m_i m_j}{|\vect q_i-\vect q_j|}}_{V(\vect q)},
+  \label{eq:hamiltonian}
+\end{equation}
+las ecuaciones de Hamilton $\dot{\vect q}_i=\partial H/\partial\vect p_i$,
+$\dot{\vect p}_i=-\partial H/\partial\vect q_i$ reproducen la ecuación~\eqref{eq:eom}. Dos
+propiedades del flujo exacto guiarán la elección del integrador: conserva el volumen (de
+hecho, la 2-forma simpléctica $\sum_i \dd\vect q_i\wedge \dd\vect p_i$) en el espacio de
+fases de $6N$ dimensiones (teorema de Liouville) y es reversible en el tiempo. Además,
+$H=T(\vect p)+V(\vect q)$ es \emph{separable}, lo que hace posible la descomposición de
+Verlet (sección~\ref{sec:verlet}).
+
+\subsection{Leyes de conservación}
+
+Por el teorema de Noether, las simetrías de un sistema aislado implican cantidades
+conservadas:
+\begin{align}
+  \text{traslaciones} &\;\Rightarrow\; \vect P=\sum_i m_i\vect v_i, \\
+  \text{rotaciones}    &\;\Rightarrow\; \vect L=\sum_i \vect r_i\times m_i\vect v_i, \\
+  \text{traslaciones temporales}  &\;\Rightarrow\; E=K+U,\quad K=\tfrac12\sum_i m_i v_i^2,\quad
+                        U=-\sum_{i<j}\frac{G m_i m_j}{r_{ij}} .
+  \label{eq:energy}
+\end{align}
+Las demostraciones indican qué debe respetar un método numérico. $\dot{\vect P}=0$ se
+sigue de $\vect F_{ij}=-\vect F_{ji}$ (tercera ley de Newton), de modo que cualquier esquema
+construido con fuerzas por pares exactamente antisimétricas conserva $\vect P$ salvo
+errores de redondeo. $\dot{\vect L}=0$ se debe a que las fuerzas son centrales,
+$\vect F_{ij}\parallel\vect r_i-\vect r_j$. La energía potencial cuenta cada par una sola
+vez; sumar sobre todos los pares ordenados y dividir entre dos, como en el informe
+original, es equivalente.
+
+Como $\vect P$ es constante, el centro de masas (CM) se mueve uniformemente con
+$\vect V_\text{cm}=\vect P/M$. Siempre que es posible trabajamos en el sistema del CM
+($\vect P=0$): el sistema no se desplaza y la energía cinética pierde el término trivial
+$\tfrac12 M V_\text{cm}^2$, imprescindible para el teorema del virial.
+
+\subsection{El teorema del virial}\label{sec:virial}
+
+Definimos el virial $\mathcal G=\sum_i\vect p_i\cdot\vect r_i$. Su derivada es
+$\dot{\mathcal G}=2K+\sum_i\vect F_i\cdot\vect r_i$. Como $U$ es homogénea de grado $-1$ en
+las posiciones, el teorema de Euler da $\sum_i\vect r_i\cdot\nabla_i U=-U$, es decir,
+$\sum_i\vect F_i\cdot\vect r_i=U$. Promediando durante un tiempo $\tau$,
+\begin{equation}
+  \frac{\mathcal G(\tau)-\mathcal G(0)}{\tau}=2\langle K\rangle+\langle U\rangle
+  \;\xrightarrow[\tau\to\infty]{}\;0
+  \quad\Longrightarrow\quad
+  Q\equiv\frac{2\langle K\rangle}{-\langle U\rangle}=1,
+  \label{eq:virial}
+\end{equation}
+siempre que el movimiento esté acotado. Hacen falta, por tanto, tres condiciones: un
+sistema ligado ($E<0$) sin cuerpos que escapen, $K$ medida en el sistema del CM y un tiempo
+de promediado largo. En equilibrio, $E=\tfrac12\langle U\rangle=-\langle K\rangle$.
+
+\subsection{El problema de dos cuerpos}
+
+Con $\vect R$ el CM y $\vect r=\vect r_2-\vect r_1$, el problema de dos cuerpos se reduce
+al de un cuerpo de masa reducida $\mu=m_1m_2/(m_1+m_2)$ en un campo central. La órbita es
+una cónica; para órbitas ligadas usaremos repetidamente
+\begin{equation}
+  v^2=GM\left(\frac{2}{r}-\frac1a\right)\ \text{(vis-viva)},\qquad
+  T^2=\frac{4\pi^2}{GM}\,a^3\ \text{(tercera ley de Kepler)},
+\end{equation}
+donde $a$ es el semieje mayor. Una órbita circular tiene $v_c=\sqrt{GM/r}$.
+
+\subsection{Estabilidad, caos y exponentes de Lyapunov}\label{sec:chaos}
+
+Sea $\boldsymbol\delta(t)$ la separación en el espacio de fases entre dos soluciones que
+parten a una distancia $\delta_0$. Para casi cualquier dirección inicial,
+\begin{equation}
+  \lambda_\text{máx}=\lim_{t\to\infty}\lim_{\delta_0\to0}\frac1t\ln\frac{|\boldsymbol\delta(t)|}{\delta_0}
+\end{equation}
+existe y se denomina \emph{exponente máximo de Lyapunov}. El movimiento regular tiene
+$\lambda_\text{máx}=0$ (las separaciones crecen, como mucho, de forma polinómica); el
+movimiento caótico tiene $\lambda_\text{máx}>0$, y los errores se multiplican por $e$ cada
+tiempo de Lyapunov $t_L=1/\lambda_\text{máx}$. Con una incertidumbre inicial $\delta_0$ y
+una tolerancia $\Delta$, solo se puede predecir hasta
+$t_\text{pred}\approx t_L\ln(\Delta/\delta_0)$: mejorar mil veces las medidas solo aporta
+$\ln 1000\approx7$ tiempos de Lyapunov más.
+
+Estimamos $\lambda_\text{máx}$ con el método de Benettin: junto a la trayectoria de
+referencia se integra una trayectoria ``sombra''; cada intervalo $\tau$ se mide su
+separación $d_k$, se acumula $\ln(d_k/\delta_0)$ y la sombra se reescala a distancia
+$\delta_0$ en la misma dirección, de modo que $\lambda\approx t^{-1}\sum_k\ln(d_k/\delta_0)$.
+Posiciones y velocidades se adimensionalizan con el radio cuadrático medio $L$ y el tiempo
+$L/v_\text{rms}$.
+
+La \emph{estabilidad lineal} es la versión local de la misma idea: una solución es
+linealmente inestable si las perturbaciones pequeñas crecen exponencialmente. La solución
+equilátera de Lagrange (sección~\ref{sec:lagrange}) es un ejemplo clásico en el que la tasa
+de crecimiento puede calcularse analíticamente y compararse con la simulación.
+
+\subsection{Suavizado y unidades}
+
+En cúmulos estelares, donde las partículas representan muchas estrellas y los encuentros
+cercanos entre dos cuerpos no interesan, sustituimos $1/r\to1/\sqrt{r^2+\varepsilon^2}$
+(suavizado de Plummer). La fuerza sigue siendo el gradiente del potencial suavizado, de modo
+que la energía suavizada también se conserva. Los problemas abstractos usan unidades de
+$N$ cuerpos, $G=M=1$, en las que todas las magnitudes son de orden unidad; las escalas
+físicas se recuperan teniendo en cuenta que el tiempo escala como $\sqrt{L^3/GM}$.
+
+% ===========================================================================
+\section{Método numérico}\label{sec:numerics}
+% ===========================================================================
+
+\subsection{Verlet-velocidad}\label{sec:verlet}
+
+Escribiendo $\vect a_n=\vect a(\vect r_n)$ para las aceleraciones de la
+ecuación~\eqref{eq:eom}, un paso de longitud $h$ es
+\begin{align}
+  \vect r_{n+1}&=\vect r_n+h\,\vect v_n+\tfrac{h^2}{2}\,\vect a_n, \label{eq:verlet1}\\
+  \vect a_{n+1}&=\vect a(\vect r_{n+1}), \\
+  \vect v_{n+1}&=\vect v_n+\tfrac{h}{2}\left(\vect a_n+\vect a_{n+1}\right). \label{eq:verlet3}
+\end{align}
+La actualización de la posición es un desarrollo de Taylor de segundo orden y la de la
+velocidad es la regla del trapecio para $\int\vect a\,\dd t$. Introduciendo
+$\vect v_{n+1/2}=\vect v_n+\tfrac h2\vect a_n$, el mismo algoritmo se lee ``medio impulso --
+deriva -- medio impulso''. Se trata de la descomposición de operadores
+$e^{\frac h2 V}e^{hT}e^{\frac h2 V}$ del hamiltoniano~\eqref{eq:hamiltonian}: la deriva es
+el flujo exacto de $T$ y los impulsos son el flujo exacto de $V$. Por tanto:
+\begin{itemize}
+  \item el método es \textbf{simpléctico} (composición de flujos hamiltonianos) y
+        \textbf{reversible} (la composición es simétrica);
+  \item por la fórmula de Baker--Campbell--Hausdorff, el error local es $\mathcal O(h^3)$ y
+        el global $\mathcal O(h^2)$;
+  \item conserva $\vect P$ y $\vect L$ exactamente (cada subpaso lo hace);
+  \item necesita una evaluación de fuerzas por paso, porque $\vect a_{n+1}$ se reutiliza
+        como $\vect a_n$ del paso siguiente (el código MATLAB original la calculaba dos veces).
+\end{itemize}
+
+\textbf{Por qué importa que sea simpléctico.} El análisis de error regresivo muestra que un
+método simpléctico de orden $p$ sigue \emph{exactamente} la dinámica de un hamiltoniano
+modificado o ``sombra'' $\tilde H=H+h^pH_p+\dots$, salvo términos exponencialmente
+pequeños. La trayectoria numérica conserva $\tilde H$, así que el error en $H$ permanece
+acotado por $\mathcal O(h^p)$ durante tiempos exponencialmente largos en lugar de derivar.
+Es la propiedad más importante para integraciones orbitales largas.
+
+\subsection{Otros integradores}
+
+Para mostrar el efecto del orden y de la estructura se han implementado otros cuatro
+esquemas (tabla~\ref{tab:integrators}). Euler explícito multiplica las áreas del espacio de
+fases por $1+\omega^2h^2$ en cada paso para un oscilador armónico, de modo que la energía
+crece exponencialmente; intercambiar dos líneas (Euler simpléctico) hace que ese factor sea
+exactamente uno. El método de Yoshida compone tres pasos de Verlet de longitudes
+$w_1h,\,w_0h,\,w_1h$ con $w_1=1/(2-2^{1/3})$ y $w_0=-2^{1/3}/(2-2^{1/3})$ (obsérvese el paso
+hacia atrás en el tiempo), lo que cancela el término de error $h^3$. RK4 es de cuarto orden
+pero no es simpléctico.
+
+\begin{table}[H]
+\centering
+\caption{Integradores implementados en \texttt{nbody/integrators.py}.}
+\label{tab:integrators}
+\begin{tabular}{lcccc}
+\toprule
+Método & Orden & Simpléctico & Reversible & Fuerzas por paso\\
+\midrule
+Euler explícito    & 1 & no & no & 1\\
+Euler simpléctico  & 1 & sí & no & 1\\
+Verlet-velocidad   & 2 & sí & sí & 1\\
+Yoshida-4          & 4 & sí & sí & 3\\
+Runge--Kutta 4     & 4 & no & no & 4\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Implementación}
+
+El código es un pequeño paquete de Python (\texttt{nbody}) basado en NumPy. El estado se
+guarda en arrays de forma $(N,3)$ (cuerpo $\times$ componente) y una trayectoria en arrays
+de forma $(T,N,3)$ (instante $\times$ cuerpo $\times$ componente). Las aceleraciones se
+calculan sin ningún bucle de Python sobre los cuerpos: el \emph{broadcasting} construye el
+tensor $(N,N,3)$ de separaciones $\vect r_j-\vect r_i$, la diagonal se excluye haciendo
+$r_{ii}^2=\infty$ y una suma de Einstein contrae el índice $j$. El coste es
+$\mathcal O(N^2)$ por paso, como en cualquier código de suma directa. La memoria de la
+trayectoria se reserva una sola vez (la versión MATLAB hacía crecer los arrays en cada paso,
+un coste $\mathcal O(T^2)$). En un portátil, el sistema Sol--Tierra--Luna
+($6{,}3\times10^4$ pasos) tarda alrededor de un segundo y el Sistema Solar
+($1{,}2\times10^5$ pasos), unos pocos segundos.
+
+\subsection{Diagnósticos y elección del paso}
+
+La conservación se mide \emph{respecto al valor inicial}: $|E(t)-E_0|/|E_0|$ para la
+energía y, para los vectores $\vect P$ y $\vect L$, la norma del cambio dividida por las
+escalas naturales $\max_t\sum_i m_i|\vect v_i|$ y $\max_t\sum_i m_i|\vect r_i||\vect v_i|$
+(necesarias porque $\vect P=0$ en el sistema del CM). El paso temporal lo fija el tiempo
+dinámico más corto del sistema, con la regla práctica $h\lesssim t_\text{din}/100$, y todos
+los resultados se han comprobado reduciendo $h$ a la mitad.
+
+% ===========================================================================
+\section{Resultados}\label{sec:results}
+% ===========================================================================
+
+\subsection{El sistema Sol--Tierra--Luna}
+
+Los cuerpos parten en el plano de la eclíptica, con la Tierra en el afelio y la Luna en el
+apogeo (tabla~\ref{tab:sem}). El periodo más corto es el de la Luna, 27,3 días, de modo que
+$h=\SI{1000}{s}$ proporciona unos 2400 pasos por órbita lunar.
+
+\begin{table}[H]
+\centering
+\caption{Condiciones iniciales del sistema Sol--Tierra--Luna (antes de pasar al sistema del
+CM). Tiempo de integración: 2 años; $h=\SI{1000}{s}$.}
+\label{tab:sem}
+\begin{tabular}{lccc}
+\toprule
+ & Sol & Tierra & Luna\\
+\midrule
+Masa (kg) & \num{1.98847e30} & \num{5.9722e24} & \num{7.342e22}\\
+$x_0$ (m) & 0 & \num{1.52098232e11} (afelio) & $x_\oplus+\num{4.055e8}$ (apogeo)\\
+$v_{y,0}$ (m/s) & 0 & \num{29290} & $v_\oplus+\num{964}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+La figura~\ref{fig:sem-orbits} muestra las órbitas. A escala heliocéntrica la órbita de la
+Luna es invisible (la distancia Tierra--Luna es 1/375 de la distancia Sol--Tierra), por lo
+que se representa también respecto a la Tierra: la elipse lunar \emph{precesa} de forma
+visible, un efecto directo de la perturbación de marea del Sol que un modelo de dos cuerpos
+no recogería.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{sem_orbits}
+\caption{Sistema Sol--Tierra--Luna durante dos años. Izquierda: órbitas alrededor del centro
+de masas (la Tierra y la Luna se superponen a esta escala). Derecha: la Luna respecto a la
+Tierra; su órbita precesa por la perturbación del Sol.}
+\label{fig:sem-orbits}
+\end{figure}
+
+Las leyes de conservación se muestran en la figura~\ref{fig:sem-cons}. El error de energía
+oscila con el periodo orbital y se mantiene por debajo de \SemErrE: no hay deriva secular,
+como cabe esperar de un método simpléctico. Los momentos lineal y angular se conservan con
+errores de \SemErrP\ y \SemErrL, respectivamente, es decir, hasta la precisión de la
+máquina; el lento crecimiento es la acumulación de errores de redondeo. Los promedios
+temporales dan $\langle K\rangle=\SemKmean\,\mathrm{J}$ y
+$-\tfrac12\langle U\rangle=\SemUhalf\,\mathrm{J}$, de modo que $Q=\SemVirial$: el teorema
+del virial se cumple con un error inferior a $10^{-4}$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{sem_conservation}
+\caption{Leyes de conservación en la simulación Sol--Tierra--Luna: (a) energías cinética,
+potencial y total; (b) error relativo de la energía, acotado y oscilante; (c) errores
+relativos de $\vect P$ y $\vect L$, al nivel del redondeo.}
+\label{fig:sem-cons}
+\end{figure}
+
+Si el Sol parte en reposo (como en el informe original), el momento total no es nulo y el
+CM se mueve a $V_\text{cm}=\SemVcm$~m/s. Aquí es despreciable porque el Sol domina la
+masa, pero en general sesga $\langle K\rangle$ y, por tanto, $Q$.
+
+\subsection{Cuatro cuerpos alrededor de un cuerpo central masivo}
+
+Este sistema reproduce la sección~4.2 del informe original (tabla~\ref{tab:four}): un
+cuerpo central de \SI{2e40}{kg} (unas $10^{10}$ masas solares, comparable a un núcleo
+galáctico), dos estrellas de aproximadamente una masa solar en el plano $xy$ y un cuerpo
+ligero en una órbita polar.
+
+\begin{table}[H]
+\centering
+\caption{Condiciones iniciales del sistema de cuatro cuerpos ($d=\SI{1.496e14}{m}$,
+$M_\odot=\SI{1.9891e30}{kg}$). Tiempo de integración: 15 años; $h=\SI{1000}{s}$.}
+\label{tab:four}
+\begin{tabular}{lcccc}
+\toprule
+ & Cuerpo 1 & Cuerpo 2 & Cuerpo 3 & Cuerpo 4\\
+\midrule
+Masa (kg) & $2{,}02\,M_\odot$ & $0{,}98\,M_\odot$ & \num{2e40} & \num{2e20}\\
+$\vect r_0$ (m) & $(0,0,0)$ & $(d,0,0)$ & $(d/2,0,0)$ & $(d/2,0,10^{14})$\\
+$\vect v_0$ & $(0,-\sqrt{Gm_3/d},0)$ & $(0,\sqrt{Gm_3/d},0)$ & $\vect 0$ & $(-\sqrt{Gm_3/10^{14}},0,0)$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+El informe original pretendía órbitas circulares, pero las velocidades usan la distancia
+$d$, que es el \emph{doble} de la distancia real $r=d/2$ al cuerpo central. Entonces
+$v^2=GM/(2r)$ y la ecuación vis-viva da $a=2r/3$: las órbitas son elipses de excentricidad
+$e=0{,}5$ cuyo apocentro es el punto de partida. La simulación mide $e=\FourEcc$, lo que
+confirma el análisis. El cuerpo 4 parte a la distancia correcta y describe una circunferencia.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.82\textwidth]{four_orbits}
+\caption{Órbitas del sistema de cuatro cuerpos durante 15 años (unas 250 órbitas de los
+cuerpos 1 y 2). Las elipses son cerradas y estables; el cuerpo masivo apenas se mueve.}
+\label{fig:four-orbits}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{four_conservation}
+\caption{Leyes de conservación en el sistema de cuatro cuerpos. El error de energía es
+máximo en los pasos por el pericentro, donde el paso temporal es relativamente mayor, pero no
+crece.}
+\label{fig:four-cons}
+\end{figure}
+
+Con órbitas excéntricas, el error de energía alcanza su máximo en cada paso por el
+pericentro, donde la escala temporal orbital es más corta, y llega a \FourErrE\
+(figura~\ref{fig:four-cons}); aun así, su envolvente es plana durante 15 años. $\vect P$ y
+$\vect L$ se conservan con errores de \FourErrP\ y \FourErrL, y el cociente del virial es
+$Q=\FourVirial$.
+
+\subsection{Caos en un sistema de seis cuerpos}
+
+Seis cuerpos de \SI{1e10}{kg} parten de los semiejes $\pm x$, $\pm y$, $\pm z$ a
+\SI{1e5}{m}, cada uno con la velocidad ($\approx\SI{2.1}{mm/s}$) de una órbita circular
+alrededor del siguiente (tabla~\ref{tab:six}). Integramos cuatro versiones durante 10 años:
+la de referencia y tres en las que una única magnitud cambia un 0,1\,\%.
+
+\begin{table}[H]
+\centering
+\caption{Sistema de seis cuerpos ($u=\SI{1.5e-3}{m/s}$). Tiempo de integración: 10 años;
+$h=\SI{1000}{s}$.}
+\label{tab:six}
+\begin{tabular}{lcccccc}
+\toprule
+ & 1 & 2 & 3 & 4 & 5 & 6\\
+\midrule
+$\vect r_0/\SI{e5}{m}$ & $(1,0,0)$ & $(0,1,0)$ & $(0,0,1)$ & $(-1,0,0)$ & $(0,-1,0)$ & $(0,0,-1)$\\
+$\vect v_0/u$ & $(1,1,0)$ & $(0,1,1)$ & $(-1,0,1)$ & $(-1,-1,0)$ & $(0,-1,-1)$ & $(1,0,-1)$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{chaos_orbits}
+\caption{Sistema de seis cuerpos: simulación de referencia y tres simulaciones con un cambio
+del 0,1\,\% en $x_1$, $v_{y,2}$ y $m_3$. Los cuerpos se emparejan en binarias y algunos son
+expulsados, de forma distinta en cada caso.}
+\label{fig:chaos-orbits}
+\end{figure}
+
+La figura~\ref{fig:chaos-orbits} muestra que las configuraciones finales son
+cualitativamente distintas. La figura~\ref{fig:chaos-div} lo cuantifica: la separación
+respecto a la referencia crece exponencialmente (una recta en escala logarítmica) tras el
+primer encuentro cercano, en torno a $t\approx2$ años, hasta saturar al tamaño del sistema.
+
+La curva más instructiva es la última: la \emph{misma} condición inicial integrada con $h$
+y con $h/2$ también diverge exponencialmente, y alcanza \ChaosHalfFinal~m al cabo de 10
+años. El error de truncamiento actúa como una perturbación más, de modo que, pasados unos
+pocos tiempos de Lyapunov, ninguna de las dos simulaciones reproduce la trayectoria exacta.
+Esto no invalida la simulación: $E$, $\vect P$ y $\vect L$ se siguen conservando
+(\ChaosErrE, \ChaosErrP, \ChaosErrL), y el lema de \emph{shadowing} garantiza que la órbita
+numérica permanece cerca de \emph{alguna} órbita exacta con condiciones iniciales
+ligeramente distintas. Las propiedades estadísticas son fiables; las trayectorias
+individuales, no.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{chaos_divergence}
+\caption{Separación $\delta r(t)$ entre cada simulación perturbada y la de referencia. La
+curva amarilla compara la misma condición inicial integrada con $h$ y con $h/2$.}
+\label{fig:chaos-div}
+\end{figure}
+
+El método de Benettin (figura~\ref{fig:chaos-lyap}) da
+$\lambda_\text{máx}\approx\ChaosLambdaYr~\text{año}^{-1}$ al cabo de 10 años, es decir, un
+tiempo de Lyapunov de unos \ChaosLyapDays\ días. La estimación salta tras el primer
+encuentro cercano y todavía deriva lentamente, señal de que la fase caótica comienza en
+$t\approx2$~años. En diez años, un error inicial se amplifica en unos \ChaosAmpExp\ órdenes
+de magnitud: ni siquiera unas condiciones iniciales con precisión doble (error relativo
+$10^{-16}$) permitirían una predicción determinista.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{chaos_lyapunov}
+\caption{Estimación acumulada del exponente máximo de Lyapunov (método de Benettin,
+renormalización cada 20 pasos, $\delta_0=10^{-8}$). La línea discontinua es el promedio del
+último 20\,\% de la simulación.}
+\label{fig:chaos-lyap}
+\end{figure}
+
+\subsection{Comparación de integradores}
+
+Para aislar el efecto del integrador usamos la órbita en forma de ocho de la
+sección~\ref{sec:eight}, con $G=m=1$ y periodo $T\approx6{,}326$. La
+figura~\ref{fig:int-energy} muestra el error máximo de energía por periodo durante 200
+periodos con un paso deliberadamente grueso, $h=T/300$. Euler explícito gana energía en
+cada paso y el sistema se desintegra en menos de diez periodos. RK4 empieza con un error
+diminuto, pero deriva \emph{linealmente}. Los tres esquemas simplécticos no muestran ninguna
+deriva, como predice el argumento del hamiltoniano sombra; a igualdad de coste, Verlet es
+mucho más robusto de lo que sugiere su orden formal, y Yoshida-4 combina orden alto con
+error acotado.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{integrators_energy}
+\caption{Error de energía a largo plazo (máximo por periodo) con $h=T/300$ en la órbita en
+forma de ocho. Solo los métodos no simplécticos muestran una deriva secular.}
+\label{fig:int-energy}
+\end{figure}
+
+La figura~\ref{fig:int-conv} representa el error en la posición tras un periodo frente al
+número de evaluaciones de fuerza, que es el coste real. Las pendientes ajustadas dan órdenes
+\OrderEuler, \OrderSympEuler, \OrderVerlet, \OrderYoshida\ y \OrderRK, que coinciden con
+los valores teóricos 1, 1, 2, 4 y 4.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{integrators_convergence}
+\caption{Orden de convergencia: error en la posición tras un periodo frente al número de
+evaluaciones de fuerza. Las pendientes se ajustan con los tres pasos más pequeños.}
+\label{fig:int-conv}
+\end{figure}
+
+\subsection{La coreografía en forma de ocho}\label{sec:eight}
+
+Moore (1993) encontró numéricamente, y Chenciner y Montgomery (2000) demostraron, que tres
+masas iguales pueden perseguirse a lo largo de una única curva en forma de ocho, separadas
+un tercio de periodo. Las condiciones iniciales son
+$\vect r_1=-\vect r_2=(-0{,}97000436;\;0{,}24308753)$, $\vect r_3=\vect 0$,
+$\vect v_3=(-0{,}93240737;\;-0{,}86473146)$, $\vect v_1=\vect v_2=-\vect v_3/2$. El momento
+angular total es exactamente nulo aunque los cuerpos giran: los dos lóbulos se recorren en
+sentidos opuestos.
+
+Con $h=T/6000$ (figura~\ref{fig:eight}), los cuerpos vuelven a sus posiciones iniciales con
+un error de \EightRetOne\ tras un periodo y de \EightRetTen\ tras diez (los propios datos
+iniciales se dan con ocho cifras). El error de energía está acotado en \EightErrE\ y
+$Q=\EightVirial$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{eight_orbit}
+\caption{Coreografía en forma de ocho durante diez periodos: las tres órbitas coinciden.
+Derecha: error relativo de la energía, acotado.}
+\label{fig:eight}
+\end{figure}
+
+Cambiar una componente de la velocidad un 0,1\,\% produce una separación que crece solo
+lentamente y \emph{sin} la tendencia exponencial del sistema de seis cuerpos
+(figura~\ref{fig:eight-stab}), y que llega a \EightDivFinal\ tras diez periodos. La órbita
+está rodeada de toros KAM invariantes: es estable.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{eight_stability}
+\caption{Separación entre la órbita en forma de ocho y una copia con $v_{x,1}$ modificada un
+0,1\,\%: crecimiento lento y no exponencial.}
+\label{fig:eight-stab}
+\end{figure}
+
+\subsection{Estabilidad del triángulo de Lagrange}\label{sec:lagrange}
+
+Lagrange (1772) demostró que tres cuerpos en los vértices de un triángulo equilátero de lado
+$d$, girando rígidamente con $\omega^2=GM/d^3$, forman una solución exacta para cualesquiera
+masas. Linealizando en el sistema de referencia que rota, los exponentes de las
+perturbaciones cumplen
+\begin{equation}
+  \lambda^4+\omega^2\lambda^2+\tfrac{27}{4}\,\beta\,\omega^4=0,\qquad
+  \beta=\frac{m_1m_2+m_2m_3+m_3m_1}{M^2}.
+\end{equation}
+Las raíces son imaginarias puras (oscilaciones estables) solo si $27\beta<1$, que es el
+criterio de Routh. Para el Sol, Júpiter y un asteroide troyano ($\beta\approx10^{-3}$) la
+configuración es estable, y por eso los asteroides troyanos se agrupan en los puntos L4 y
+L5 de Júpiter. Para masas iguales, $\beta=1/3$, las raíces cumplen
+$\lambda^2=\omega^2(-1\pm i\sqrt8)/2$ y la tasa de crecimiento es
+$\operatorname{Re}\lambda=\omega/\sqrt2$.
+
+En la simulación no se añade ninguna perturbación a mano: basta el error de truncamiento de
+Verlet (figura~\ref{fig:lagrange}). Con masas iguales, la deformación del triángulo crece
+exponencialmente desde $10^{-6}$ hasta orden unidad, y un ajuste lineal de $\ln\delta$ da
+$\sigma=\LagSigma$, frente al valor teórico $\LagSigmaTh$. Con las masas Sol--Júpiter--troyano,
+la deformación se mantiene por debajo de \LagTrojanMax. La pequeña deformación periódica del
+principio no es una inestabilidad: Verlet resuelve exactamente un hamiltoniano sombra cuya
+órbita circular tiene un radio ligeramente distinto.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{lagrange}
+\caption{Deformación del triángulo de Lagrange (mayor cambio relativo de un lado). Masas
+iguales: crecimiento exponencial con la tasa que predice la teoría lineal.
+Sol--Júpiter--troyano: acotada.}
+\label{fig:lagrange}
+\end{figure}
+
+\subsection{El Sistema Solar y la tercera ley de Kepler}
+
+El Sol y los ocho planetas se inicializan con sus masas, semiejes mayores, excentricidades e
+inclinaciones reales (tabla~\ref{tab:planets}). Cada planeta parte del perihelio con
+velocidad $v_p=\sqrt{GM_\odot(1+e)/(a(1-e))}$ y una fase orbital aleatoria; su plano orbital
+se inclina girando alrededor de la recta Sol--perihelio. Son condiciones iniciales
+ilustrativas, no las efemérides de una fecha concreta. El paso $h=0{,}5$~días lo fija
+Mercurio (176 pasos por órbita), y la simulación abarca una órbita de Neptuno, 165 años.
+
+\begin{table}[H]
+\centering
+\caption{Parámetros planetarios y periodos orbitales medidos en la simulación (contando
+vueltas del ángulo polar alrededor del Sol).}
+\label{tab:planets}
+\begin{tabular}{lccccc}
+\toprule
+Planeta & Masa (kg) & $a$ (UA) & $e$ & $i$ (°) & $T$ medido (años)\\
+\midrule
+Mercurio & \num{3.3011e23} & 0,387 & 0,206 & 7,00 & \PeriodMercury\\
+Venus    & \num{4.8675e24} & 0,723 & 0,007 & 3,39 & \PeriodVenus\\
+Tierra   & \num{5.9722e24} & 1,000 & 0,017 & 0,00 & \PeriodEarth\\
+Marte    & \num{6.4171e23} & 1,524 & 0,093 & 1,85 & \PeriodMars\\
+Júpiter  & \num{1.8982e27} & 5,203 & 0,049 & 1,30 & \PeriodJupiter\\
+Saturno  & \num{5.6834e26} & 9,555 & 0,057 & 2,49 & \PeriodSaturn\\
+Urano    & \num{8.6810e25} & 19,22 & 0,046 & 0,77 & \PeriodUranus\\
+Neptuno  & \num{1.02413e26} & 30,11 & 0,011 & 1,77 & \PeriodNeptune\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{solar_orbits}
+\caption{Sistema Solar: planetas interiores durante dos años (izquierda) y el sistema
+completo durante una órbita de Neptuno (derecha).}
+\label{fig:solar}
+\end{figure}
+
+Un ajuste log-log de los periodos medidos frente a los semiejes mayores
+(figura~\ref{fig:kepler}) da una pendiente de \SolarSlope, frente al valor $3/2$ de la
+tercera ley de Kepler. Las pequeñas desviaciones de los planetas exteriores son reales:
+Júpiter y Saturno se perturban mutuamente y perturban a sus vecinos, y para Urano y Neptuno
+una sola órbita excéntrica es demasiado corta para promediar la velocidad angular. En 165
+años, la energía se conserva con un error de \SolarErrE, los momentos con \SolarErrP\ y
+\SolarErrL, y $Q=\SolarVirial$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{solar_kepler}
+\caption{Tercera ley de Kepler: periodos orbitales medidos en la simulación frente al
+semieje mayor, junto con la recta $T=a^{3/2}$ (años y UA).}
+\label{fig:kepler}
+\end{figure}
+
+\subsection{Cúmulos estelares y el teorema del virial}
+
+Por último, seguimos 400 ``estrellas'' de igual masa en unidades de $N$ cuerpos, con
+suavizado $\varepsilon=0{,}05$ y $h=0{,}002$. Una \emph{esfera de Plummer}, muestreada a
+partir de su función de distribución de equilibrio, nace virializada y se mantiene cerca de
+$Q=1$ (promedio a tiempos largos \PlummerQlate), con fluctuaciones debidas a que $N$ es
+finito.
+
+Un \emph{colapso frío} parte de una esfera homogénea con todas las estrellas en reposo
+($Q=0$). La gravedad la hace colapsar en aproximadamente un tiempo de caída libre
+$t_{ff}=\frac\pi2\sqrt{R^3/2GM}\approx1{,}11$; en la compresión máxima, $Q$ sobrepasa la
+unidad hasta \ColdQmax, el cúmulo rebota y en pocos $t_{ff}$ se asienta en un estado
+cuasiestacionario con $\langle Q\rangle=\ColdQlate$ (figura~\ref{fig:cluster}). Esta
+\emph{relajación violenta} (Lynden-Bell, 1967) ocurre en la escala de tiempo dinámica, sin
+colisiones entre estrellas, y se cree que da forma a las galaxias elípticas. Los radios
+lagrangianos muestran la formación de un núcleo denso mientras el 10\,\% exterior de la masa
+se expande formando un halo, parte del cual escapa (figura~\ref{fig:collapse}). La energía
+suavizada se conserva con un error de \ColdErrE\ pese a la violenta compresión.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cluster_virial}
+\caption{Izquierda: cociente del virial $Q=2K/|U|$ en el colapso frío y en la esfera de
+Plummer. Derecha: radios lagrangianos que contienen el 10, el 50 y el 90\,\% de la masa
+durante el colapso frío.}
+\label{fig:cluster}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cluster_snapshots}
+\caption{Instantáneas del colapso frío (proyección $xy$): esfera inicial, contracción,
+compresión máxima y cúmulo final relajado con estrellas que escapan.}
+\label{fig:collapse}
+\end{figure}
+
+\subsection{Vídeos}
+
+El repositorio contiene además vídeos 3D (MP4) de estos experimentos, con cámara giratoria
+y estelas que se desvanecen (\texttt{videos/}). La figura~\ref{fig:stills} muestra cuatro
+fotogramas.
+
+\IfFileExists{figures/video_stills.png}{
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{video_stills.png}
+\caption{Fotogramas de los vídeos: coreografía en forma de ocho, caos en el sistema de seis
+cuerpos, el Sistema Solar durante una órbita de Neptuno y el colapso frío de un cúmulo
+estelar.}
+\label{fig:stills}
+\end{figure}
+}{}
+
+% ===========================================================================
+\section{Discusión}
+% ===========================================================================
+
+La tabla~\ref{tab:summary} recoge los errores de conservación de todas las simulaciones. Los
+momentos lineal y angular se conservan hasta la precisión de la máquina en todos los casos,
+como se espera de un método basado en fuerzas centrales por pares antisimétricas. El error
+de energía está siempre acotado y su tamaño lo controla el cociente entre el paso temporal y
+el tiempo dinámico más corto: es mayor en las órbitas excéntricas del sistema de cuatro
+cuerpos y en el núcleo denso del cúmulo en colapso.
+
+\begin{table}[H]
+\centering
+\caption{Errores máximos de conservación y cociente del virial en cada simulación
+(Verlet-velocidad).}
+\label{tab:summary}
+\begin{tabular}{lcccc}
+\toprule
+Simulación & $|\Delta E/E_0|$ & $|\Delta\vect P|$ (rel.) & $|\Delta\vect L|$ (rel.) & $Q$\\
+\midrule
+Sol--Tierra--Luna (2 años) & \SemErrE & \SemErrP & \SemErrL & \SemVirial\\
+Cuatro cuerpos (15 años)   & \FourErrE & \FourErrP & \FourErrL & \FourVirial\\
+Seis cuerpos (10 años)     & \ChaosErrE & \ChaosErrP & \ChaosErrL & ---\\
+Ocho (10 $T$)              & \EightErrE & --- & --- & \EightVirial\\
+Sistema Solar (165 años)   & \SolarErrE & \SolarErrP & \SolarErrL & \SolarVirial\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+El teorema del virial se cumple con un error de $10^{-4}$ o inferior en todos los sistemas
+ligados y acotados. No se aplica al sistema de seis cuerpos, donde hay cuerpos que escapan,
+ni a los primeros instantes del colapso frío, que es precisamente lo que convierte a este
+último en una buena ilustración de la relajación hacia el equilibrio virial.
+
+Respecto al trabajo original de 2023 conviene señalar tres correcciones. Primero, la masa de
+la Luna de la tabla~1 de aquel informe (\SI{2e40}{kg}) era una errata por
+\SI{7.342e22}{kg}. Segundo, la órbita terrestre tiene una excentricidad cercana a cero, no a
+uno. Tercero, las órbitas del sistema de cuatro cuerpos no son circulares sino que tienen
+$e=0{,}5$, como explica la ecuación vis-viva. Además, medir los errores respecto al valor
+inicial (en lugar de restar la media) revela la lenta deriva de $\vect L$ por redondeo que
+la media oculta.
+
+Las principales limitaciones son las de cualquier código de paso fijo y suma directa. Los
+encuentros cercanos (por ejemplo, el problema pitagórico de tres cuerpos de Burrau) exigen
+pasos adaptativos, que deben diseñarse con cuidado para preservar la simplecticidad, o una
+regularización. El coste $\mathcal O(N^2)$ limita el método a unos pocos miles de cuerpos;
+más allá hacen falta códigos de árbol ($\mathcal O(N\log N)$) o métodos multipolares
+rápidos.
+
+% ===========================================================================
+\section{Conclusiones}
+% ===========================================================================
+
+\begin{itemize}
+  \item El método de Verlet-velocidad conserva los momentos lineal y angular hasta la
+        precisión de la máquina y mantiene acotado el error de energía durante miles de
+        órbitas, porque es simpléctico. Los métodos no simplécticos derivan, aunque sean de
+        orden más alto.
+  \item Los órdenes de convergencia medidos (\OrderVerlet\ para Verlet, \OrderYoshida\ para
+        Yoshida-4) concuerdan con la teoría, y Yoshida-4 ofrece la mejor precisión por coste
+        sin dejar de ser simpléctico.
+  \item Se reproducen cuantitativamente resultados analíticos: la tercera ley de Kepler
+        (pendiente \SolarSlope), la excentricidad que predice la ecuación vis-viva
+        (\FourEcc), la tasa de inestabilidad lineal del triángulo de Lagrange (\LagSigma\
+        frente a \LagSigmaTh) y el teorema del virial.
+  \item El problema de $N$ cuerpos es, en general, caótico: el sistema de seis cuerpos tiene
+        un tiempo de Lyapunov de unos \ChaosLyapDays\ días, e incluso el paso de integración
+        cambia la trayectoria tras unos pocos tiempos de Lyapunov. Las predicciones a largo
+        plazo solo tienen sentido estadístico, garantizado por las leyes de conservación y
+        la propiedad de \emph{shadowing}.
+\end{itemize}
+
+% ===========================================================================
+\appendix
+\section{Cómo reproducir los resultados}
+% ===========================================================================
+
+\begin{verbatim}
+git clone https://github.com/jesus-garcia-izquierdo/N-body-problem.git
+cd N-body-problem
+pip install -e .
+python examples/01_sun_earth_moon.py      # ... hasta 08_cluster_virial.py
+python tools/build_documents.py           # regenera este informe
+\end{verbatim}
+
+% ===========================================================================
+\begin{thebibliography}{99}
+\small
+\bibitem{aarseth} S.~J. Aarseth, \emph{Gravitational N-Body Simulations}, Cambridge University Press (2003).
+\bibitem{benettin} G.~Benettin, L.~Galgani, A.~Giorgilli, J.-M. Strelcyn, \emph{Meccanica} \textbf{15}, 9--30 (1980).
+\bibitem{binney} J.~Binney, S.~Tremaine, \emph{Galactic Dynamics}, 2.ª ed., Princeton University Press (2008).
+\bibitem{chenciner} A.~Chenciner, R.~Montgomery, \emph{Annals of Mathematics} \textbf{152}, 881--901 (2000).
+\bibitem{goldstein} H.~Goldstein, C.~Poole, J.~Safko, \emph{Classical Mechanics}, 3.ª ed., Addison-Wesley (2002).
+\bibitem{hairer} E.~Hairer, C.~Lubich, G.~Wanner, \emph{Geometric Numerical Integration}, 2.ª ed., Springer (2006).
+\bibitem{haro} G.~Haro Pérez, J.~García Izquierdo, \emph{Problema de los n-cuerpos}, informe de asignatura (2023).
+\bibitem{laskar} J.~Laskar, \emph{Nature} \textbf{338}, 237--238 (1989).
+\bibitem{lyndenbell} D.~Lynden-Bell, \emph{Monthly Notices of the RAS} \textbf{136}, 101 (1967).
+\bibitem{moore} C.~Moore, \emph{Physical Review Letters} \textbf{70}, 3675 (1993).
+\bibitem{szebehely} V.~Szebehely, C.~F. Peters, \emph{Astronomical Journal} \textbf{72}, 876 (1967).
+\bibitem{verlet} L.~Verlet, \emph{Physical Review} \textbf{159}, 98 (1967).
+\bibitem{yoshida} H.~Yoshida, \emph{Physics Letters A} \textbf{150}, 262--268 (1990).
+\end{thebibliography}
+
+\end{document}
